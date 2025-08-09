@@ -37,6 +37,7 @@ tasks {
         minecraftVersion("1.21.5")
         downloadPlugins {
             hangar("squaremap", "1.3.5")
+            modrinth("skinsrestorer", "15.7.8")
             // url("https://ci.enginehub.org/repository/download/bt10/22612:id/worldedit-bukkit-7.2.16-SNAPSHOT-dist.jar?guest=1")
             // url("https://ci.enginehub.org/repository/download/bt11/22585:id/worldguard-bukkit-7.0.10-SNAPSHOT-dist.jar?guest=1")
         }

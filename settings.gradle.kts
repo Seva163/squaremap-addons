@@ -24,6 +24,9 @@ dependencyResolutionManagement {
                 includeGroupByRegex("com\\.github\\..*")
             }
         }
+        maven("https://repo.codemc.org/repository/maven-public/") {
+            name = "codemc"
+        }
         modrinthMavenWorkaround(
             "claimchunk",
             "0.0.25-FIX3",

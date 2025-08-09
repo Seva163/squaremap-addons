@@ -2,12 +2,24 @@ package xyz.jpenilla.squaremap.addon.skins;
 
 import com.destroystokyo.paper.profile.PlayerProfile;
 import com.destroystokyo.paper.profile.ProfileProperty;
+
+import net.skinsrestorer.api.PropertyUtils;
+import net.skinsrestorer.api.SkinsRestorerProvider;
+import net.skinsrestorer.api.event.SkinApplyEvent;
+import net.skinsrestorer.api.model.MojangProfileResponse;
+import net.skinsrestorer.api.model.MojangProfileTexture;
+import net.skinsrestorer.api.model.MojangProfileTextureMeta;
+
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
-import java.net.URL;
-import java.util.Base64;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.HashMap;
+
 import javax.imageio.ImageIO;
+
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -16,13 +28,15 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
-import org.json.simple.JSONObject;
-import org.json.simple.parser.JSONParser;
+import org.imgscalr.Scalr;
+import org.jetbrains.annotations.Nullable;
+
 import xyz.jpenilla.squaremap.api.SquaremapProvider;
 
 public final class SquaremapSkins extends JavaPlugin {
     private static SquaremapSkins instance;
     private static File skinsDir;
+    private static HashMap<String, String> skinHashes = new HashMap<>();
 
     public SquaremapSkins() {
         instance = this;
@@ -43,19 +57,22 @@ public final class SquaremapSkins extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new Listener() {
             @EventHandler(priority = EventPriority.MONITOR)
             public void onPlayerJoin(PlayerJoinEvent event) {
-                new FetchSkinURL(event.getPlayer()).runTaskLater(instance, 5);
+                new FetchSkinURL(event.getPlayer()).runTaskLater(instance, 2);
             }
         }, this);
 
         int interval = getConfig().getInt("update-interval", 60);
-        new UpdateTask().runTaskTimer(instance, interval, interval);
+        new UpdateTask().runTaskTimer(this, interval, interval);
+
+        SkinsRestorerProvider.get().getEventBus().subscribe(instance, SkinApplyEvent.class, (event) -> {
+            new FetchSkinURL(event.getPlayer(Player.class)).runTaskLater(this, 2);
+        });
     }
 
     private static class UpdateTask extends BukkitRunnable {
         @Override
         public void run() {
-            Bukkit.getOnlinePlayers().forEach(player ->
-                new FetchSkinURL(player).runTask(instance));
+            Bukkit.getOnlinePlayers().forEach(player -> new FetchSkinURL(player).runTask(instance));
         }
     }
 
@@ -68,9 +85,6 @@ public final class SquaremapSkins extends JavaPlugin {
 
         @Override
         public void run() {
-            if (!player.isOnline()) {
-                return;
-            }
             String url = getTexture(player);
             if (url == null || url.isEmpty()) {
                 return;
@@ -96,32 +110,64 @@ public final class SquaremapSkins extends JavaPlugin {
     }
 
     private static String getTexture(Player player) {
+        if (!player.isOnline()) {
+            return null;
+        }
         PlayerProfile profile = player.getPlayerProfile();
         for (ProfileProperty property : profile.getProperties()) {
-            if (property.getName().equals("textures")) {
-                try {
-                    String data = property.getValue();
-                    byte[] base64 = Base64.getDecoder().decode(data);
-                    String json = new String(base64);
-                    JSONObject obj = (JSONObject) new JSONParser().parse(json);
-                    JSONObject obj2 = (JSONObject) obj.get("textures");
-                    JSONObject obj3 = (JSONObject) obj2.get("SKIN");
-                    return (String) obj3.get("url");
-                } catch (Exception e) {
-                    e.printStackTrace();
+            if (!property.getName().equals("textures")) {
+                continue;
+            }
+            try {
+                MojangProfileTexture texture = PropertyUtils.getSkinProfileData(property.getValue())
+                        .getTextures()
+                        .getSKIN();
+                String oldHash = skinHashes.get(player.getName());
+                String newHash = texture.getTextureHash();
+                if (newHash.equals(oldHash)) {
+                    return null;
+                } else {
+                    skinHashes.put(player.getName(), newHash);
                 }
+                return texture.getUrl();
+            } catch (Exception e) {
+                instance.getSLF4JLogger().error("Invalid profile data (player='{}')", player.getName(), e);
             }
         }
         return null;
     }
 
     private void saveTexture(String name, String url) {
+        BufferedImage skin;
         try {
-            BufferedImage img = ImageIO.read(new URL(url)).getSubimage(8, 8, 8, 8);
+            skin = ImageIO.read(new URI(url).toURL());
+        } catch (IllegalArgumentException | MalformedURLException | URISyntaxException e) {
+            instance.getSLF4JLogger()
+                    .warn("Invalid skin url (player='{}', url='{}')", name, url, e);
+            return;
+        } catch (IOException e) {
+            instance.getSLF4JLogger().warn("Could not download skin(player='{}', url='{}')", name, url, e);
+            return;
+        }
+        try {
+            BufferedImage head = skin.getSubimage(8, 8, 8, 8);
+            BufferedImage mask = skin.getSubimage(40, 8, 8, 8);
+            for (int y = 0; y < 8; y++) {
+                for (int x = 0; x < 8; x++) {
+                    int rgb = mask.getRGB(x, y);
+                    if ((rgb >>> 24) > 168) {
+                        head.setRGB(x, y, rgb);
+                    }
+                }
+            }
+            head = Scalr.resize(head, Scalr.Method.SPEED, 16, 16);
             File file = new File(skinsDir, name + ".png");
-            ImageIO.write(img, "png", file);
-        } catch (Exception e) {
-            this.getSLF4JLogger().info("Could not save texture {} to {}", url, new File(skinsDir, name + ".png"), e);
+            File fileLowerCase = new File(skinsDir, name.toLowerCase() + ".png");
+            ImageIO.write(head, "png", file);
+            ImageIO.write(head, "png", fileLowerCase);
+        } catch (IOException e) {
+            this.getSLF4JLogger().error("Could not save texture to {}",
+                    new File(skinsDir, name + ".png").getAbsolutePath(), e);
         }
     }
 }
